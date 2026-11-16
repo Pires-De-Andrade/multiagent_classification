@@ -191,6 +191,9 @@ def select_rows(split, limit=None, generation=False) -> pd.DataFrame:
     df = df.merge(flags, on="Row Number")
     if generation:  # teacher data: only rows whose label the official code reproduces
         df = df[df["oracle_consistent"] & ~df["Calculator Name"].isin(EXCLUDED)]
+    # interleave calculators (seeded): any prefix, from --limit or a time-capped run, is stratified
+    df = df.sample(frac=1, random_state=0)
+    df = df.iloc[df.groupby("Calculator Name").cumcount().argsort(kind="stable")]
     return df.head(limit) if limit else df
 
 
@@ -202,9 +205,14 @@ async def main_async(a):
     done = {json.loads(l)["row"] for l in out.open(encoding="utf-8")} if out.exists() else set()
     todo = [r for _, r in df.iterrows() if int(r["Row Number"]) not in done]
     print(f"{len(todo)} episodes to run ({len(done)} already in {out})")
-    n_ok = 0
+    n_ok, slots = 0, asyncio.Semaphore(a.episodes)  # bounded: episodes finish steadily, wall_s excludes queueing
+
+    async def bounded(r):
+        async with slots:
+            return await run_episode(llm, a.mode, r)
+
     with out.open("a", encoding="utf-8") as f:
-        for i, fut in enumerate(asyncio.as_completed([run_episode(llm, a.mode, r) for r in todo]), 1):
+        for i, fut in enumerate(asyncio.as_completed([asyncio.create_task(bounded(r)) for r in todo]), 1):
             rec = await fut
             n_ok += rec["correct"]
             f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
@@ -224,7 +232,8 @@ def main():
     p.add_argument("--generation", action="store_true", help="only oracle-consistent, non-excluded rows")
     p.add_argument("--temperature", type=float, default=0.0)
     p.add_argument("--max-tokens", type=int, default=1024)
-    p.add_argument("--concurrency", type=int, default=16)
+    p.add_argument("--concurrency", type=int, default=16, help="max LLM calls in flight")
+    p.add_argument("--episodes", type=int, default=8, help="max episodes in flight")
     p.add_argument("--thinking", action="store_true")
     asyncio.run(main_async(p.parse_args()))
 
