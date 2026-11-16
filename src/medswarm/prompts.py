@@ -14,9 +14,8 @@ Answer with a single JSON object and nothing else, with one key per requested va
 {"<variable name>": {"value": <value or null>, "evidence": "<verbatim quote from the note>"}}
 Rules:
 - value must follow the requested format exactly.
-- Use null when the note does not mention the variable (evidence may then be "").
-- Use false for a condition only when the note states it is absent.
-- evidence must be copied word for word from the note."""
+- Use null when the note does not mention the variable, false when it states it is absent (evidence may then be "").
+- Otherwise evidence must be copied word for word from the note (use "..." between non-adjacent pieces)."""
 
 COT_SYSTEM = "You are a careful clinician. Think step by step, then end with a final line 'Answer: <number>'."
 

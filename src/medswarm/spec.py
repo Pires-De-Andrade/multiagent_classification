@@ -73,6 +73,9 @@ def validate(extraction, calc_id: int, note: str, expected: list[str]) -> tuple[
         v, s = item["value"], spec[name]
         if v is None:
             continue
+        if s["type"] == "number_with_unit" and len(s.get("units", [])) == 1 and isinstance(v, (int, float)) \
+                and not isinstance(v, bool):
+            v = [v, s["units"][0]]  # bare number, only one allowed unit
         ok = {
             "boolean": isinstance(v, bool),
             "choice": v in s.get("options", []),
@@ -84,8 +87,12 @@ def validate(extraction, calc_id: int, note: str, expected: list[str]) -> tuple[
         if not ok:
             errors.append(f"Invalid value for '{name}': {json.dumps(v)}. Expected {describe(s)}.")
             continue
+        if v is False:  # absence needs no quote; the official code scores it like "not mentioned"
+            values[name] = v
+            continue
         evidence = item.get("evidence") or ""
-        if not (isinstance(evidence, str) and evidence.strip() and _norm(evidence) in _norm(note)):
+        parts = [_norm(p) for p in re.split(r"\.\.\.|…", evidence) if p.strip()] if isinstance(evidence, str) else []
+        if not (parts and all(p in _norm(note) for p in parts)):  # "a ... b": each piece verbatim
             errors.append(f"Evidence for '{name}' must be a verbatim quote from the note.")
             continue
         values[name] = v
