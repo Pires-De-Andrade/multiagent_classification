@@ -45,14 +45,15 @@ def main():
             path = next(Path(trl.__file__).parent.rglob(a.chat_template))
         tok.chat_template = path.read_text()
     ds = load_dataset("json", data_files={"train": f"{a.data}/train.jsonl", "val": f"{a.data}/val.jsonl"})
+    kinds = ds["train"]["kind"]
     ds = ds.remove_columns("kind")
 
     model = AutoModelForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16)
     cfg = SFTConfig(
         output_dir=a.out, num_train_epochs=a.epochs, learning_rate=a.lr, lr_scheduler_type="cosine",
-        warmup_ratio=0.03, per_device_train_batch_size=a.batch, gradient_accumulation_steps=a.grad_accum,
+        warmup_steps=0.03, per_device_train_batch_size=a.batch, gradient_accumulation_steps=a.grad_accum,
         gradient_checkpointing=not a.no_grad_ckpt, use_liger_kernel=a.liger, packing=a.packing,
-        max_steps=a.max_steps, bf16=True, max_length=a.max_length, assistant_only_loss=True,
+        max_steps=a.max_steps, bf16=torch.cuda.is_available(), use_cpu=not torch.cuda.is_available(), max_length=a.max_length, assistant_only_loss=True,
         logging_steps=10, eval_strategy="epoch", save_strategy="epoch", report_to="none")
     lora = LoraConfig(r=a.rank, lora_alpha=a.alpha, use_rslora=True, lora_dropout=0.0,
                       target_modules="all-linear", task_type="CAUSAL_LM")
@@ -61,10 +62,13 @@ def main():
                          processing_class=tok, peft_config=lora)
 
     if a.check_mask:
-        ex = next(e for e in trainer.train_dataset if sum(e["assistant_masks"]) < len(e["input_ids"]))
-        trained = [t for t, m in zip(ex["input_ids"], ex["assistant_masks"]) if m]
-        print(f"{sum(ex['assistant_masks'])}/{len(ex['input_ids'])} tokens trained. Trained text:\n")
-        print(tok.decode(trained))
+        # TRL >= 1.18 folds the assistant mask into labels (-100 = not trained)
+        for kind in ("orchestrator", "subagent"):
+            i = next(i for i, k in enumerate(kinds) if k == kind)
+            ex = trainer.train_dataset[i]
+            trained = [t for t, l in zip(ex["input_ids"], ex["labels"]) if l != -100]
+            print(f"=== {kind} sample {i}: {len(trained)}/{len(ex['input_ids'])} tokens trained. Trained text:\n")
+            print(tok.decode(trained), "\n")
         lengths = sorted(len(e["input_ids"]) for e in trainer.train_dataset)
         print(f"\nlengths: median={lengths[len(lengths) // 2]} max={lengths[-1]} (max_length={a.max_length})")
         return
