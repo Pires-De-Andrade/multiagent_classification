@@ -25,6 +25,8 @@ from medswarm.spec import get_spec, validate
 
 MAX_ORCH_TURNS = 4
 MAX_SUB_ATTEMPTS = 2
+VOTES = 1               # --votes: independent extractions per sub-agent call, majority per variable
+VOTE_TEMPERATURE = 0.7  # sampling temperature of the extra votes (vote 0 uses the run temperature)
 
 
 class LLM:
@@ -36,10 +38,11 @@ class LLM:
         self.model, self.temperature, self.max_tokens, self.thinking = model, temperature, max_tokens, thinking
         self.sem = asyncio.Semaphore(concurrency)
 
-    async def __call__(self, messages, tools=None) -> tuple[dict, int]:
+    async def __call__(self, messages, tools=None, temperature=None) -> tuple[dict, int]:
         async with self.sem:
             r = await self.client.chat.completions.create(
-                model=self.model, messages=messages, tools=tools, temperature=self.temperature,
+                model=self.model, messages=messages, tools=tools,
+                temperature=self.temperature if temperature is None else temperature,
                 max_tokens=self.max_tokens, extra_body={"chat_template_kwargs": {"enable_thinking": self.thinking}})
         m = r.choices[0].message
         msg = {"role": "assistant", "content": m.content or ""}
@@ -71,13 +74,30 @@ def parse_json(text: str):
 
 
 async def run_subagent(llm, ep: Episode, parent, names, instructions):
+    """Sub-agent call. With VOTES > 1, run that many independent extractions in parallel (vote 0 at the run
+    temperature, the rest at VOTE_TEMPERATURE) and keep, per variable, the most common valid value
+    (ties go to vote 0). Returns (values, errors, steps, tokens); steps/tokens count the slowest vote."""
+    if VOTES == 1:
+        return await extract(llm, ep, parent, names, instructions)
+    outs = await asyncio.gather(*(extract(llm, ep, parent, names, instructions, vote=i,
+                                          temperature=None if i == 0 else VOTE_TEMPERATURE) for i in range(VOTES)))
+    values = {}
+    for name in names:
+        seen = [json.dumps(o[0][name]) for o in outs if name in o[0]]
+        if seen:
+            values[name] = json.loads(max(dict.fromkeys(seen), key=seen.count))  # first-seen wins ties
+    errors = [] if len(values) == len(names) else outs[0][1]
+    return values, errors, max(o[2] for o in outs), max(o[3] for o in outs)
+
+
+async def extract(llm, ep: Episode, parent, names, instructions, vote=None, temperature=None):
     """One extraction agent with up to MAX_SUB_ATTEMPTS validation rounds. Returns (values, errors, steps, tokens)."""
     row = ep.row
     messages = prompts.subagent_messages(row, names, instructions)
-    agent = ep.add_agent("subagent", parent, messages, variables=names)
+    agent = ep.add_agent("subagent", parent, messages, variables=names, **({} if vote is None else {"vote": vote}))
     steps = tokens = 0
     for _ in range(MAX_SUB_ATTEMPTS):
-        msg, n = await llm(messages)
+        msg, n = await (llm(messages) if temperature is None else llm(messages, temperature=temperature))
         messages.append(msg)
         steps, tokens = steps + 1, tokens + n
         values, errors = validate(parse_json(msg["content"]), row["Calculator ID"], row["Patient Note"], names)
@@ -181,7 +201,7 @@ async def run_episode(llm, mode, row) -> dict:
             "note_type": row["Note Type"], "mode": mode, "model": llm.model, "gold": str(row["Ground Truth Answer"]),
             "correct": is_correct(out["answer"], row), "oracle_consistent": bool(row["oracle_consistent"]),
             "excluded": row["Calculator Name"] in EXCLUDED, "wall_s": time.perf_counter() - t0,
-            "n_subagents": sum(a["role"] == "subagent" for a in ep.agents), "error": error,
+            "n_subagents": sum(a["role"] == "subagent" and a.get("vote", 0) == 0 for a in ep.agents), "error": error,
             "gold_entities": row["entities"], **out, "agents": ep.agents}
 
 
@@ -198,8 +218,13 @@ def select_rows(split, limit=None, generation=False) -> pd.DataFrame:
 
 
 async def main_async(a):
+    global VOTES
+    VOTES = a.votes
     llm = LLM(a.base_url, a.model, a.temperature, a.max_tokens, a.concurrency, a.thinking)
     df = select_rows(a.split, a.limit, a.generation)
+    if a.only_failed:  # rejection sampling: retry rows with no correct episode in these logs
+        ok = {r["row"] for f in a.only_failed for l in open(f, encoding="utf-8") if (r := json.loads(l))["correct"]}
+        df = df[~df["Row Number"].astype(int).isin(ok)]
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     done = {json.loads(l)["row"] for l in out.open(encoding="utf-8")} if out.exists() else set()
@@ -235,6 +260,8 @@ def main():
     p.add_argument("--concurrency", type=int, default=16, help="max LLM calls in flight")
     p.add_argument("--episodes", type=int, default=8, help="max episodes in flight")
     p.add_argument("--thinking", action="store_true")
+    p.add_argument("--votes", type=int, default=1, help="extractions per sub-agent call (majority vote)")
+    p.add_argument("--only-failed", nargs="+", metavar="LOG", help="only rows with no correct episode in these logs")
     asyncio.run(main_async(p.parse_args()))
 
 
