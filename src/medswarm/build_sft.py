@@ -4,6 +4,9 @@ Keep an episode only if: correct, label reproduced by the oracle, no runtime err
 ended with a valid extraction. At most one episode per row and CAP per calculator.
 Each kept episode yields one orchestrator sample (sub-agent results appear as tool messages, which
 assistant-only loss masks) and one sample per sub-agent (only its final valid answer).
+The orchestrator's free text next to its tool calls is dropped by default: the teacher often reads the
+note and extracts values itself before delegating the same work (83% of episodes have such text, 27%
+quote the note), and the student should learn to delegate, not to imitate that.
 
 Usage: python -m medswarm.build_sft runs/teacher_train*.jsonl --out data/sft
 """
@@ -37,10 +40,24 @@ def with_dict_args(messages):
     return out
 
 
-def samples(rec):
+def calls_only(messages):
+    """Drop free text from tool-calling turns, and drop text-only turns (the teacher scoring by hand)
+    together with the harness nudge that followed them, so results lead straight to calculate()."""
+    out = []
+    for i, m in enumerate(messages):
+        if m["role"] == "assistant" and not m.get("tool_calls"):
+            continue
+        if m["role"] == "user" and i > 1:  # nudge after a text-only turn
+            continue
+        out.append({**m, "content": ""} if m["role"] == "assistant" else m)
+    return out
+
+
+def samples(rec, keep_text=False):
     for a in rec["agents"]:
         if a["role"] == "orchestrator":
-            yield {"messages": with_dict_args(a["messages"]), "tools": TOOLS, "kind": "orchestrator"}
+            msgs = a["messages"] if keep_text else calls_only(a["messages"])
+            yield {"messages": with_dict_args(msgs), "tools": TOOLS, "kind": "orchestrator"}
         else:  # system, user, final valid answer (drop failed attempts so they get no loss)
             yield {"messages": a["messages"][:2] + a["messages"][-1:], "kind": "subagent"}
 
@@ -49,6 +66,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("runs", nargs="+")
     p.add_argument("--out", default="data/sft")
+    p.add_argument("--keep-orchestrator-text", action="store_true", help="ablation: keep the teacher's prose")
     a = p.parse_args()
 
     recs = [json.loads(l) for f in a.runs for l in open(f, encoding="utf-8")]
@@ -67,7 +85,7 @@ def main():
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     for name, part in (("val", kept[:n_val]), ("train", kept[n_val:])):
-        rows = [s for r in part for s in samples(r)]
+        rows = [s for r in part for s in samples(r, a.keep_orchestrator_text)]
         with (out / f"{name}.jsonl").open("w", encoding="utf-8") as f:
             f.writelines(json.dumps(s, ensure_ascii=False) + "\n" for s in rows)
         print(f"{name}: {len(rows)} samples {dict(Counter(s['kind'] for s in rows))}")
