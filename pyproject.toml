@@ -12,7 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
-train = ["torch", "transformers>=5", "trl>=1.18", "peft", "datasets"]
+train = ["torch", "transformers>=5", "trl>=1.18", "peft", "datasets", "liger-kernel"]
 
 [build-system]
 requires = ["hatchling"]

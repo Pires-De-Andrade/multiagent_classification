@@ -25,7 +25,14 @@ def main():
     p.add_argument("--chat-template", help="training template with {% generation %} markers (e.g. TRL's qwen3_5_nothink_training.jinja)")
     p.add_argument("--epochs", type=float, default=2)
     p.add_argument("--lr", type=float, default=2e-4)
-    p.add_argument("--rank", type=int, default=32)
+    p.add_argument("--rank", type=int, default=64)
+    p.add_argument("--alpha", type=int, default=16, help="rsLoRA scale = alpha/sqrt(rank) (2.0 at the defaults)")
+    p.add_argument("--batch", type=int, default=2)
+    p.add_argument("--grad-accum", type=int, default=8)
+    p.add_argument("--no-grad-ckpt", action="store_true", help="faster if it fits in VRAM")
+    p.add_argument("--liger", action="store_true", help="Liger fused kernels (fused linear+CE: no full logits)")
+    p.add_argument("--packing", action="store_true", help="padding-free BFD packing (needs flash-attn support)")
+    p.add_argument("--max-steps", type=int, default=-1, help="for throughput benchmarks")
     p.add_argument("--max-length", type=int, default=8192)
     p.add_argument("--check-mask", action="store_true")
     a = p.parse_args()
@@ -43,10 +50,12 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16)
     cfg = SFTConfig(
         output_dir=a.out, num_train_epochs=a.epochs, learning_rate=a.lr, lr_scheduler_type="cosine",
-        warmup_ratio=0.03, per_device_train_batch_size=2, gradient_accumulation_steps=8,
-        gradient_checkpointing=True, bf16=True, max_length=a.max_length, assistant_only_loss=True,
+        warmup_ratio=0.03, per_device_train_batch_size=a.batch, gradient_accumulation_steps=a.grad_accum,
+        gradient_checkpointing=not a.no_grad_ckpt, use_liger_kernel=a.liger, packing=a.packing,
+        max_steps=a.max_steps, bf16=True, max_length=a.max_length, assistant_only_loss=True,
         logging_steps=10, eval_strategy="epoch", save_strategy="epoch", report_to="none")
-    lora = LoraConfig(r=a.rank, lora_alpha=a.rank, target_modules="all-linear", task_type="CAUSAL_LM")
+    lora = LoraConfig(r=a.rank, lora_alpha=a.alpha, use_rslora=True, lora_dropout=0.0,
+                      target_modules="all-linear", task_type="CAUSAL_LM")
     # processing_class=tok (not a processor) avoids TRL's "assistant-only loss not supported for VLMs" (trl#5471)
     trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds["train"], eval_dataset=ds["val"],
                          processing_class=tok, peft_config=lora)
@@ -61,6 +70,9 @@ def main():
         return
 
     trainer.train()
+    print(f"peak VRAM {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
+    if a.max_steps > 0:  # benchmark run: no merge
+        return
     merged = trainer.model.merge_and_unload()
     merged.save_pretrained(f"{a.out}/merged")
     tok.save_pretrained(f"{a.out}/merged")
