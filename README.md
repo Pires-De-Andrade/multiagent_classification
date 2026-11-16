@@ -39,6 +39,20 @@ python -m medswarm.oracle      # writes data/oracle/, prints consistency per cal
 pytest -q                      # calculate/oracle, validator, orchestrator + single episodes with a fake LLM
 ```
 
+## Server footprint and uninstall
+
+Everything lives inside the project dir: `scripts/env.sh` points uv, Python installs, HF, vLLM, Triton and
+torch caches at `.cache/`. Run `source scripts/env.sh` before any manual command (the scripts do it themselves).
+
+| Path | Contents |
+|---|---|
+| `.venv-serve/`, `.venv-train/` | the two venvs (vLLM / training) |
+| `.cache/` | uv packages + Python 3.12, HF models, compile caches |
+| `data/`, `third_party/` | dataset + official calculator code (`scripts/fetch_data.sh`) |
+| `runs/`, `logs/` | episodes, checkpoints, logs: **copy/upload before deleting** |
+
+Uninstall: `pkill -f 'vllm serve'; rm -rf .venv-serve .venv-train .cache data third_party runs logs`.
+
 ## GPU runbook (server, one model on the GPU at a time)
 
 ```bash

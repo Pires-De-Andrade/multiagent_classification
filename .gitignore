@@ -6,3 +6,6 @@ runs/
 results/
 third_party/
 outputs/
+.venv-*/
+.cache/
+logs/
