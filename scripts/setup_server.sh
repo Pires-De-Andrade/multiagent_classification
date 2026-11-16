@@ -10,6 +10,7 @@ uv venv .venv-serve --python 3.12
 VIRTUAL_ENV=.venv-serve uv pip install "vllm>=0.26" -e .
 uv venv .venv-train --python 3.12
 VIRTUAL_ENV=.venv-train uv pip install -e ".[train,dev]"
+PYTHON=.venv-train/bin/python bash scripts/fetch_data.sh
 
 for m in hyperhuzaifa/Qwen3.6-35B-A3B-W4A16-AWQ stelterlab/Qwen3-30B-A3B-Instruct-2507-AWQ \
          Qwen/Qwen3.5-2B Qwen/Qwen3-1.7B; do
