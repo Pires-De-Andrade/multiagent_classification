@@ -6,7 +6,7 @@
 #   scripts/remote.sh log <name> [lines]    # tail a log
 #   scripts/remote.sh pull                  # fetch runs/ and data/sft back
 set -euo pipefail
-HOST=${HOST:-user_joaoandrade@10.100.60.21}
+HOST=${HOST:?set HOST=user@server}
 DIR=${DIR:-kimi_multiagent}
 
 case "$1" in

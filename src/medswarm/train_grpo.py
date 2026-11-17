@@ -9,6 +9,10 @@ including rows the teacher got wrong. Reward: fraction of requested variables th
 validator, verbatim evidence) and match the gold Relevant Entities; 0 if the output is not JSON.
 Caveat: train entities are GPT-4 extractions, not human-verified, so the reward is noisy.
 
+Result (4B, 700 steps): variable accuracy on annotated variables rose (93.2 -> 94.4%) but case accuracy fell
+(80.9 -> 75.3%): boolean false positives almost doubled and errors on variables outside the annotation (which
+neither this reward nor var_acc sees) rose 71 -> 123. A better reward would score the final calculator output.
+
 Usage:
   python -m medswarm.train_grpo --model runs/sft_qwen35_r2/merged --out runs/grpo --max-steps 10   # smoke test
   python -m medswarm.train_grpo --model runs/sft_qwen35_r2/merged --out runs/grpo                  # long run
@@ -80,10 +84,6 @@ def main():
     p.add_argument("--resume", action="store_true", help="continue from the last checkpoint in --out if any")
     p.add_argument("--merge", help="checkpoint dir: merge its LoRA into --model, save to OUT/merged, exit")
     a = p.parse_args()
-    import os  # TEMPORARY (night of 16/11): lets finish4.sh skip finish3's 2B-only RL stage; remove afterwards
-    if os.path.exists("runs/grpo_skip") and not a.merge:
-        print("runs/grpo_skip exists: skipping")
-        return
 
     from peft import LoraConfig, PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
