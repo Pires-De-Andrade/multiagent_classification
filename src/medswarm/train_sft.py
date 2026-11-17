@@ -18,6 +18,8 @@ from trl import SFTConfig, SFTTrainer
 
 
 def main():
+    import sys
+    sys.stdout.reconfigure(line_buffering=True)  # metrics show up live in redirected logs
     p = argparse.ArgumentParser()
     p.add_argument("--model", required=True)
     p.add_argument("--out", required=True)

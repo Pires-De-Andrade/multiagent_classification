@@ -63,6 +63,8 @@ def extraction_reward(completions, names, calc_id, gold, note, **_):
 
 
 def main():
+    import sys
+    sys.stdout.reconfigure(line_buffering=True)  # metrics show up live in redirected logs
     p = argparse.ArgumentParser()
     p.add_argument("--model", required=True, help="SFT-merged student")
     p.add_argument("--out", required=True)
@@ -73,8 +75,15 @@ def main():
     p.add_argument("--rank", type=int, default=32)
     p.add_argument("--generations", type=int, default=8)
     p.add_argument("--prompts-per-step", type=int, default=4)
+    p.add_argument("--micro-batch", type=int, help="completions per forward/backward (default: all generations of a prompt); lower it to save VRAM")
+    p.add_argument("--gen-prompts", type=int, help="prompts generated at once (default: all of a step); 1 caps generation VRAM")
+    p.add_argument("--resume", action="store_true", help="continue from the last checkpoint in --out if any")
     p.add_argument("--merge", help="checkpoint dir: merge its LoRA into --model, save to OUT/merged, exit")
     a = p.parse_args()
+    import os  # TEMPORARY (night of 16/11): lets finish4.sh skip finish3's 2B-only RL stage; remove afterwards
+    if os.path.exists("runs/grpo_skip") and not a.merge:
+        print("runs/grpo_skip exists: skipping")
+        return
 
     from peft import LoraConfig, PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -93,7 +102,9 @@ def main():
     print(f"{len(ds)} sub-agent prompts")
     cfg = GRPOConfig(
         output_dir=a.out, max_steps=a.max_steps, learning_rate=a.lr, lr_scheduler_type="constant_with_warmup",
-        warmup_steps=10, per_device_train_batch_size=a.generations, gradient_accumulation_steps=a.prompts_per_step,
+        warmup_steps=10, per_device_train_batch_size=a.micro_batch or a.generations,
+        gradient_accumulation_steps=a.generations * a.prompts_per_step // (a.micro_batch or a.generations),
+        steps_per_generation=(a.gen_prompts * a.generations // (a.micro_batch or a.generations)) if a.gen_prompts else None,
         num_generations=a.generations, max_completion_length=384, temperature=1.0, beta=0.0,
         chat_template_kwargs={"enable_thinking": False}, gradient_checkpointing=True, bf16=True,
         logging_steps=1, save_steps=a.save_steps, save_total_limit=20, report_to="none", log_completions=False)
@@ -102,7 +113,8 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(a.model, dtype=torch.bfloat16)
     trainer = GRPOTrainer(model=model, reward_funcs=extraction_reward, args=cfg, train_dataset=ds,
                           processing_class=tok, peft_config=lora)
-    trainer.train()
+    from pathlib import Path
+    trainer.train(resume_from_checkpoint=a.resume and any(Path(a.out).glob("checkpoint-*")))
     print(f"peak VRAM {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
 
 
